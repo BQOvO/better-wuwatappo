@@ -4,6 +4,8 @@
 
 全部通过 CDP（Chrome DevTools Protocol）注入 Tappo 自己的 WebView2 页面实现——不修改 Tappo 的任何文件，不往游戏里注入任何东西，也不 hook 键盘。
 
+> **English**: A small CDP-based enhancement for the *Wuthering Waves* desktop pet **WuwaTappo**. It auto-opens chests, farms idle clicks, and shows keycap bubbles above the pet whenever you type. Everything is injected into Tappo's own WebView2 page over the DevTools protocol — no game files touched, no keyboard hooks. Windows only, needs Python 3.8+ and `websockets`.
+
 ![按键气泡真机效果](效果图/按键气泡_真机效果_小图.png)
 
 ---
@@ -59,7 +61,7 @@ Set-ItemProperty -Path $k -Name 'AdditionalBrowserArguments' -Value '--remote-de
 
 ### 2. 放好文件
 
-把整个文件夹放到任意英文路径下，比如 `D:\WuwaTappo注入器\`。
+把整个文件夹放到任意位置（路径里带中文也没关系，脚本都按自身位置找文件）。
 
 ### 3. 启动
 
@@ -160,7 +162,7 @@ tappo_watch.py  监督员：看着桌宠与引擎，挂了就拉起来
 启动引擎.vbs     双击启动（无窗口）
 停止引擎.bat     双击停止（先写标记再杀进程）
 效果图/          截图
-备份/            开发过程的历史快照，不影响运行
+备份/            开发过程的历史快照，不影响运行（未随仓库分发）
 ```
 
 日志在 `%LOCALAPPDATA%\鸣潮宝箱助手CDP\logs\`，出问题先看 `cdp-YYYYMMDD.log`。
