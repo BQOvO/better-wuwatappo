@@ -6,7 +6,7 @@
 
 > **English**: A small CDP-based enhancement for the *Wuthering Waves* desktop pet **WuwaTappo**. It auto-opens chests, farms idle clicks, and shows keycap bubbles above the pet whenever you type. Everything is injected into Tappo's own WebView2 page over the DevTools protocol — no game files touched, no keyboard hooks. Windows only, needs Python 3.8+ and `websockets`.
 
-![按键气泡真机效果](效果图/按键气泡_真机效果_小图.png)
+![按键气泡](效果图/按键气泡_主图.png)
 
 ---
 
@@ -20,13 +20,17 @@
 - **按住不放只冒一次** —— 忽略系统自动重复。
 - **游戏里也冒** —— 采集走全局轮询，不依赖焦点。
 
-| 方案选项 | 定稿效果图 |
+| 组合键 | 上档符号 |
 |---|---|
-| ![方案选项](效果图/按键气泡_方案选项.png) | ![定稿](效果图/按键气泡_效果图.png) |
+| ![Ctrl Shift S](效果图/按键气泡_主图.png) | ![Shift 左方括号](效果图/按键气泡_上档符号.png) |
+| **鼠标左右键** | **连续打字** |
+| ![鼠标](效果图/按键气泡_鼠标键.png) | ![连发](效果图/按键气泡_连发.png) |
+
+> 上面几张都是透明背景的页面原图，直接抠出来的，没有桌面截图。
 
 功能面板里可以直接关、调大小、开关鼠标键：
 
-![面板](效果图/按键气泡_重启后验证.png)
+![面板](效果图/面板_宝箱助手.png)
 
 ---
 
