@@ -341,13 +341,40 @@ class RegionKeeper:
     所以之前一直以为是"注入没生效"）。这里定期把区域清掉。
     窗口本身带 WS_EX_TRANSPARENT，铺满全屏也不会挡住任何鼠标点击。"""
 
-    def __init__(self, interval=0.2):
+    def __init__(self, interval=0.05):
         self.interval = interval
         self.cleared = 0
         self.probed = 0
         self.err = None
+        self.hwnd = None      # 上次探测用的窗口句柄（诊断：确认清的是不是主窗口）
+        self.last_kind = 0    # 上次 GetWindowRgn 的返回值
+        self.last_rv = None   # 上次 SetWindowRgn 的返回值（0 = 清除失败）
+        self.stuck = 0        # 连续「读到有区域但清完立刻又有」的次数
         self._stop = threading.Event()
         self._th = None
+
+    def ensure_clear(self):
+        """同步清一次区域，返回清之前的 kind。
+        键要冒泡之前先调它：只靠后台线程轮询是赢不了时序的 ——
+        Tappo 在「进游戏模式」「重新注入」这些时刻会重新 SetWindowRgn，
+        正好把那一秒的气泡切掉。这里在推按键前主动清，把时序依赖消掉。"""
+        try:
+            u, g = _rgn_funcs()
+            h = tappo_hwnd()
+            if not h:
+                return None
+            hr = g.CreateRectRgn(0, 0, 0, 0)
+            kind = u.GetWindowRgn(h, hr)
+            g.DeleteObject(hr)
+            if kind != 0:
+                self.last_rv = u.SetWindowRgn(h, None, True)
+                self.cleared += 1
+            self.last_kind = kind
+            self.hwnd = h
+            return kind
+        except Exception as e:
+            self.err = repr(e)
+            return None
 
     def start(self):
         if self._th is not None:
@@ -361,19 +388,10 @@ class RegionKeeper:
         self._th = None
 
     def _loop(self):
-        u, g = _rgn_funcs()
         while not self._stop.is_set():
             try:
-                h = tappo_hwnd()
-                if h:
-                    hr = g.CreateRectRgn(0, 0, 0, 0)
-                    has = u.GetWindowRgn(h, hr)
-                    g.DeleteObject(hr)
-                    self.probed += 1
-                    # 0=NULLREGION 没有区域；1/2/3 是有区域（3 也算，App 设的就是 3）
-                    if has != 0:
-                        u.SetWindowRgn(h, None, True)
-                        self.cleared += 1
+                self.probed += 1
+                self.ensure_clear()
             except Exception as e:
                 self.err = repr(e)
             time.sleep(self.interval)
@@ -1052,6 +1070,10 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
     else:
         log("面板页暂未找到，设置界面将在面板出现后自动注入")
 
+    # 气泡必须能被画出来：App 把窗口裁成只剩猫那一块，头顶全是窗口外。
+    # 先建好（kb_setup 里要用），再起后台线程。
+    rgn = RegionKeeper()
+
     # ---- 按键气泡：装页面侧脚本 + 起全局轮询线程 ----
     kb_ready = [False]
 
@@ -1067,6 +1089,8 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
                 await t.eval(make_kbcfg_js(cfg))
             except Exception:
                 pass
+            # 「重启注入」正是 Tappo 重设裁剪区的时刻之一，装完立刻清一次
+            rgn.ensure_clear()
         return kb_ready[0]
 
     await kb_setup()
@@ -1086,8 +1110,7 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
     watcher = KeyWatcher(enabled=cfg["keybubble"], mouse=cfg["kbmouse"])
     watcher.start()
 
-    # 气泡必须能被画出来：App 把窗口裁成只剩猫那一块，头顶全是窗口外
-    rgn = RegionKeeper()
+    # 后台持续盯裁剪区（上面已经建好 rgn，这里只负责起线程）
     rgn.start()
 
     farm_count = [0]
@@ -1143,11 +1166,13 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
 
                 if time.monotonic() - _dbg[0] >= 5.0:
                     _dbg[0] = time.monotonic()
-                    log("KBDEBUG beats=%d keys=%d pushed=%d q=%d raw=%d/%d ready=%s on=%s/%s vis=%s errs=%d err=%s rgn=%d/%d"
+                    log("KBDEBUG beats=%d keys=%d pushed=%d q=%d raw=%d/%d ready=%s on=%s/%s vis=%s errs=%d err=%s "
+                        "rgn=%d/%d hwnd=%s kind=%d rv=%s stuck=%d rerr=%s"
                         % (watcher.beats, watcher.keys, watcher.pushed, len(watcher._q),
                            _raw["keys"], _raw["peak"], kb_ready[0],
                            cfg["keybubble"], watcher.enabled, watcher._vis,
-                           watcher.errs, watcher.err, rgn.cleared, rgn.probed))
+                           watcher.errs, watcher.err, rgn.cleared, rgn.probed,
+                           rgn.hwnd, rgn.last_kind, rgn.last_rv, rgn.stuck, rgn.err))
                     _raw["keys"] = 0
                     _raw["peak"] = 0
 
@@ -1174,6 +1199,10 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
                 batch = watcher.drain()
                 if not batch:
                     continue
+                # 推键之前先同步清一次窗口裁剪区：Tappo 在「进游戏模式」「重新注入」
+                # 这些时刻会重新 SetWindowRgn，靠后台 50ms 轮询会漏掉那一两帧，
+                # 结果就是刚进游戏/刚重启时头几个气泡被切掉。这里主动清，消掉时序依赖。
+                rgn.ensure_clear()
                 watcher.pushed += 1
                 v = t._val(await t.eval(make_keys_js(batch)))
                 if not v.get("ok"):
