@@ -318,6 +318,23 @@ def tappo_visible():
         return False
     return bool(u.IsWindowVisible(h)) and not u.IsIconic(h)
 
+def _rgn_funcs():
+    """给 GDI 的区域函数补上显式类型。
+    坑：ctypes 不声明时 HRGN 按 32 位 int 返回，64 位 Python 上句柄被截断，
+    GetWindowRgn 拿到无效句柄永远返回 0 —— 于是"明明有区域"却判断成没有，
+    RegionKeeper 一次都没清过（= 气泡只显示半截的真凶）。重复调用无害。"""
+    u = ctypes.windll.user32
+    g = ctypes.windll.gdi32
+    g.CreateRectRgn.argtypes = [ctypes.c_int] * 4
+    g.CreateRectRgn.restype = ctypes.c_void_p
+    g.DeleteObject.argtypes = [ctypes.c_void_p]
+    g.DeleteObject.restype = ctypes.c_int
+    u.GetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+    u.GetWindowRgn.restype = ctypes.c_int
+    u.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    u.SetWindowRgn.restype = ctypes.c_int
+    return u, g
+
 class RegionKeeper:
     """Tappo 自己用 SetWindowRgn 把主窗口裁成只剩猫那一小块，
     气泡飞到头顶就在区域外面，系统直接不画 —— 屏幕上什么都看不到（截页面截图却看得见，
@@ -327,6 +344,8 @@ class RegionKeeper:
     def __init__(self, interval=0.2):
         self.interval = interval
         self.cleared = 0
+        self.probed = 0
+        self.err = None
         self._stop = threading.Event()
         self._th = None
 
@@ -342,8 +361,7 @@ class RegionKeeper:
         self._th = None
 
     def _loop(self):
-        u = ctypes.windll.user32
-        g = ctypes.windll.gdi32
+        u, g = _rgn_funcs()
         while not self._stop.is_set():
             try:
                 h = tappo_hwnd()
@@ -351,11 +369,13 @@ class RegionKeeper:
                     hr = g.CreateRectRgn(0, 0, 0, 0)
                     has = u.GetWindowRgn(h, hr)
                     g.DeleteObject(hr)
-                    if has:                      # 有区域 → 清掉，整窗可见
+                    self.probed += 1
+                    # 0=NULLREGION 没有区域；1/2/3 是有区域（3 也算，App 设的就是 3）
+                    if has != 0:
                         u.SetWindowRgn(h, None, True)
                         self.cleared += 1
-            except Exception:
-                pass
+            except Exception as e:
+                self.err = repr(e)
             time.sleep(self.interval)
 
 class KeyWatcher:
@@ -1123,11 +1143,11 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
 
                 if time.monotonic() - _dbg[0] >= 5.0:
                     _dbg[0] = time.monotonic()
-                    log("KBDEBUG beats=%d keys=%d pushed=%d q=%d raw=%d/%d ready=%s on=%s/%s vis=%s errs=%d err=%s"
+                    log("KBDEBUG beats=%d keys=%d pushed=%d q=%d raw=%d/%d ready=%s on=%s/%s vis=%s errs=%d err=%s rgn=%d/%d"
                         % (watcher.beats, watcher.keys, watcher.pushed, len(watcher._q),
                            _raw["keys"], _raw["peak"], kb_ready[0],
                            cfg["keybubble"], watcher.enabled, watcher._vis,
-                           watcher.errs, watcher.err))
+                           watcher.errs, watcher.err, rgn.cleared, rgn.probed))
                     _raw["keys"] = 0
                     _raw["peak"] = 0
 
