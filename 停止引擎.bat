@@ -1,5 +1,30 @@
 @echo off
 setlocal
+rem Stop the watcher and the engine.
+rem
+rem Needs elevation: once the watcher runs elevated (see the .vbs launcher),
+rem a normal-privilege taskkill cannot terminate it. This script re-launches
+rem itself elevated if needed, then does the killing.
+
+rem ---- elevation gate ------------------------------------------------------
+rem "net session" only succeeds for administrators. That is the cheapest
+rem reliable elevation test available from a batch file.
+net session >nul 2>&1
+if %errorlevel%==0 goto :elevated
+
+rem Not elevated: ask UAC for an elevated copy of this script, then quit.
+powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs" >nul 2>&1
+if %errorlevel%==0 (
+    echo Requested administrator rights in a new window...
+    timeout /t 2 >nul
+    exit /b 0
+)
+echo Could not get administrator rights. Trying anyway - may not be able to
+echo stop an elevated engine.
+echo.
+
+:elevated
+
 rem Write the stop marker BEFORE killing anything, so a watcher that survives
 rem the taskkill does not immediately pull the engine back up.
 rem The data folder name contains Chinese characters; match it by its "CDP"

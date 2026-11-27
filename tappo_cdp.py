@@ -318,6 +318,16 @@ def tappo_visible():
         return False
     return bool(u.IsWindowVisible(h)) and not u.IsIconic(h)
 
+def is_elevated():
+    """本进程是不是管理员权限。
+    为什么要问：Tappo 若以管理员启动，它的窗口句柄属于高完整性级别，
+    普通用户权限的引擎既改不了它的窗口区域（SetWindowRgn 静默返回 0），
+    游戏以管理员跑时也读不到键盘。这是「进游戏后气泡失效」的根因。"""
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        return False
+
 def _rgn_funcs():
     """给 GDI 的区域函数补上显式类型。
     坑：ctypes 不声明时 HRGN 按 32 位 int 返回，64 位 Python 上句柄被截断，
@@ -344,6 +354,7 @@ class RegionKeeper:
     def __init__(self, interval=0.05):
         self.interval = interval
         self.cleared = 0
+        self.failed = 0       # SetWindowRgn 被拒绝的次数（权限不够就是这里涨）
         self.probed = 0
         self.err = None
         self.hwnd = None      # 上次探测用的窗口句柄（诊断：确认清的是不是主窗口）
@@ -357,7 +368,11 @@ class RegionKeeper:
         """同步清一次区域，返回清之前的 kind。
         键要冒泡之前先调它：只靠后台线程轮询是赢不了时序的 ——
         Tappo 在「进游戏模式」「重新注入」这些时刻会重新 SetWindowRgn，
-        正好把那一秒的气泡切掉。这里在推按键前主动清，把时序依赖消掉。"""
+        正好把那一秒的气泡切掉。这里在推按键前主动清，把时序依赖消掉。
+
+        注意：SetWindowRgn 只在真的成功时才 +cleared。跨权限改窗口区域会被
+        系统静默拒绝（返回 0），以前不看返回值就 +1，把失败也记成成功，
+        于是日志上「清了 23 万次」而屏幕上照样被切 —— 假账比没账更坏。"""
         try:
             u, g = _rgn_funcs()
             h = tappo_hwnd()
@@ -366,11 +381,17 @@ class RegionKeeper:
             hr = g.CreateRectRgn(0, 0, 0, 0)
             kind = u.GetWindowRgn(h, hr)
             g.DeleteObject(hr)
-            if kind != 0:
-                self.last_rv = u.SetWindowRgn(h, None, True)
-                self.cleared += 1
             self.last_kind = kind
             self.hwnd = h
+            if kind != 0:
+                rv = u.SetWindowRgn(h, None, True)
+                self.last_rv = rv
+                if rv:
+                    self.cleared += 1
+                else:
+                    # 跨权限被拒。这是「引擎以普通用户跑、Tappo 以管理员跑」的典型症状，
+                    # 只能由用户提权启动引擎来解决（见 README「权限」一节）。
+                    self.failed += 1
             return kind
         except Exception as e:
             self.err = repr(e)
@@ -1096,6 +1117,12 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
     await kb_setup()
     if cfg["keybubble"]:
         log("按键气泡已就绪（全局轮询，8ms 一次）")
+    if not is_elevated():
+        log("提示：本引擎未以管理员身份运行。若 Tappo 是以管理员启动的，"
+            "引擎将无法清除它的窗口裁剪区、游戏运行时也可能读不到按键 —— "
+            "进游戏后气泡失效多半是这个原因。用「以管理员身份运行」重启引擎即可。")
+    else:
+        log("权限：管理员，可以跨权限操作 Tappo 窗口")
 
     async def kb_alive():
         """实测页面里脚本还在不在：True 在 / False 没了 / None 问不出来"""
@@ -1167,12 +1194,13 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
                 if time.monotonic() - _dbg[0] >= 5.0:
                     _dbg[0] = time.monotonic()
                     log("KBDEBUG beats=%d keys=%d pushed=%d q=%d raw=%d/%d ready=%s on=%s/%s vis=%s errs=%d err=%s "
-                        "rgn=%d/%d hwnd=%s kind=%d rv=%s stuck=%d rerr=%s"
+                        "rgn=%d/%d fail=%d hwnd=%s kind=%d rv=%s stuck=%d elev=%s rerr=%s"
                         % (watcher.beats, watcher.keys, watcher.pushed, len(watcher._q),
                            _raw["keys"], _raw["peak"], kb_ready[0],
                            cfg["keybubble"], watcher.enabled, watcher._vis,
                            watcher.errs, watcher.err, rgn.cleared, rgn.probed,
-                           rgn.hwnd, rgn.last_kind, rgn.last_rv, rgn.stuck, rgn.err))
+                           rgn.failed, rgn.hwnd, rgn.last_kind, rgn.last_rv,
+                           rgn.stuck, is_elevated(), rgn.err))
                     _raw["keys"] = 0
                     _raw["peak"] = 0
 
@@ -1203,6 +1231,10 @@ async def run(claim=True, farm=True, rate=40.0, min_balance=1000, hud=False,
                 # 这些时刻会重新 SetWindowRgn，靠后台 50ms 轮询会漏掉那一两帧，
                 # 结果就是刚进游戏/刚重启时头几个气泡被切掉。这里主动清，消掉时序依赖。
                 rgn.ensure_clear()
+                if rgn.last_kind != 0 and not rgn.last_rv and rgn.failed in (1, 3, 10, 100):
+                    # 只在特定次数提醒，别每 60ms 刷屏
+                    log("窗口裁剪区清不掉（已拒绝 %d 次）——引擎权限比 Tappo 低，"
+                        "请用「以管理员身份运行」重启本引擎，见 README「权限」" % rgn.failed)
                 watcher.pushed += 1
                 v = t._val(await t.eval(make_keys_js(batch)))
                 if not v.get("ok"):
