@@ -67,23 +67,51 @@ Set-ItemProperty -Path $k -Name 'AdditionalBrowserArguments' -Value '--remote-de
 
 把整个文件夹放到任意位置（路径里带中文也没关系，脚本都按自身位置找文件）。
 
-### 3. 启动
+### 3. 装成开机自启（推荐，一次搞定）
 
-双击 **`启动引擎.vbs`**。它没有窗口，静悄悄在后台起一个监督员，之后每次 WuwaTappo 一启动就会自动带起引擎。
+**不要**把快捷方式丢进 `shell:startup`——那样起来的是普通权限，气泡会被裁。要用**任务计划**，这样开机就以管理员权限跑，而且不弹 UAC。
 
-> ⚠️ **会弹 UAC 要求管理员权限，必须点「是」。**
+用**管理员** PowerShell 跑这一段（把路径换成你放文件的地方）：
 
-这是硬性要求，不是保守起见。原因见下面「权限」一节——不给管理员权限，键帽气泡进游戏/重启后就会被裁掉。
+```powershell
+$dir   = "D:\WuwaTappo注入器"
+$pyw   = "C:\Python314\pythonw.exe"
+$watch = "$dir\tappo_watch.py"
 
-如果不想每次点 UAC，可以给 `启动引擎.vbs` 建一个**任务计划**：触发器选「登录时」，勾上「使用最高权限运行」。这样开机就自动有气泡，不再弹窗。
+$action    = New-ScheduledTaskAction -Execute $pyw -Argument "`"$watch`"" -WorkingDirectory $dir
+$trigger   = New-ScheduledTaskTrigger -AtLogOn
+$trigger.Delay = "PT8S"          # 比 Tappo 那个任务晚几秒，等它先起来
+$principal = New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$env:USERNAME" -RunLevel Highest -LogonType Interactive
+$settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
 
-想开机自启，把 `启动引擎.vbs` 的快捷方式丢进 `shell:startup`（Win+R 输入那个就能打开启动文件夹）。
+Register-ScheduledTask -TaskName "TappoChestWatch" -TaskPath "\WuwaTappo\" `
+  -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force
+```
+
+装好之后**什么都不用管**：开机 → Tappo 自己起来 → 8 秒后监督员以管理员权限起来 → 发现 Tappo 在跑 → 拉起引擎。全程无窗口、无弹窗。
+
+> 这个任务和 Tappo 自己那个 `\WuwaTappo\ElevatedAutostart` 是同一个套路（`RunLevel=Highest`），所以引擎的权限和 Tappo 永远一样，不会再被 UIPI 挡住。
+
+验证装好了没：
+
+```powershell
+Get-ScheduledTask -TaskName "TappoChestWatch" -TaskPath "\WuwaTappo\" | Select-Object TaskName,State
+(Get-ScheduledTask -TaskName "TappoChestWatch" -TaskPath "\WuwaTappo\").Principal | Select-Object RunLevel
+```
+
+`State = Ready`、`RunLevel = Highest` 就对了。
+
+### 3b. 只想手动跑
+
+双击 **`启动引擎.vbs`** 也行。它没有窗口，会先请求提权（UAC 弹窗点「是」），然后起监督员，之后每次 WuwaTappo 一启动就自动带起引擎。
+
+> ⚠️ 那个 UAC 弹窗是必须的，见下面「权限」一节。不想每次点就按上面装成任务计划。
 
 ### 4. 停掉
 
 双击 **`停止引擎.bat`**。它先写一个 `engine.stopped` 标记再杀进程，所以监督员不会立刻又给你拉起来。它自己也会请求提权（不然杀不掉管理员权限的引擎）。
 
-想重新开，双击 `启动引擎.vbs` 就行（它会自动清掉那个标记）。
+想重新开：双击 `启动引擎.vbs`，或者跑 `schtasks /Run /TN "\WuwaTappo\TappoChestWatch"`。两条路都会清掉那个标记（监督员启动即视为新会话）。
 
 ---
 

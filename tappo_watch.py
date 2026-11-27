@@ -141,6 +141,12 @@ def main():
     if lock is None:
         log("监督员已在跑（端口 9224 被占），本次退出")
         return
+    # 清掉上一次「停止引擎」留下的标记：监督员启动 = 新一次会话。
+    # 开机时由计划任务拉起，不该被几天前那个标记永久挡住。
+    # （用户真想停，就再点一次 停止引擎，它会重新写标记并把我们杀掉。）
+    if engine_stopped():
+        clear_stop_flag()
+        log("清掉上次留下的 engine.stopped（监督员启动=新会话）")
     log("监督员启动: 每 %.0fs 看一眼 %s" % (POLL, PET_EXE))
     pet_was = False
     last_reconcile = time.time()  # 首次对账等一个完整周期，别跟边沿触发的 spawn 抢跑
